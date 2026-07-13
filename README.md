@@ -1,4 +1,7 @@
-# Sentinel <3 Nutanix
+﻿# Sentinel <3 Nutanix
+
+![Version](https://img.shields.io/badge/version-0.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+
 
 A self-hosted connector that ships **Nutanix Prism Central** telemetry (alerts, events, and audit logs) into **Microsoft Sentinel** via the Azure Monitor **Logs Ingestion API**, plus a ready-to-use detection and visualization pack.
 
@@ -47,7 +50,7 @@ az deployment group create -g <rg> --template-file azuredeploy.json `
   --parameters workspaceName=<your-sentinel-workspace>
 ```
 
-The deployment outputs `dceIngestEndpoint`, `dcrImmutableId`, and `streamName` — you'll
+The deployment outputs `dceIngestEndpoint`, `dcrImmutableId`, and `streamName` â€” you'll
 need these for the collector. Analytics rules deploy **disabled** by default; set
 `enableRules=true` to turn them on, or enable them individually after review.
 
@@ -96,4 +99,5 @@ Nutanix_CL | sort by TimeGenerated desc | take 50
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT â€” see [LICENSE](LICENSE).
+
