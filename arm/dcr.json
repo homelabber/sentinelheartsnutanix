@@ -1,0 +1,89 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Data Collection Rule for the Nutanix -> Sentinel connector (Option B, Logs Ingestion API). Declares one input stream (Custom-NutanixInbound) whose columns match exactly what the collector POSTs, applies a KQL transformation, and routes into the Nutanix_CL custom table. The stream declaration + transformKql are the pieces you later lift into a CCP connector's dcrConfig with minimal change."
+  },
+  "parameters": {
+    "dcrName": {
+      "type": "string",
+      "defaultValue": "dcr-nutanix-sentinel",
+      "metadata": { "description": "Name of the Data Collection Rule." }
+    },
+    "location": {
+      "type": "string",
+      "metadata": { "description": "Region. MUST match the Log Analytics workspace and DCE region." }
+    },
+    "workspaceResourceId": {
+      "type": "string",
+      "metadata": { "description": "Full resource ID of the Log Analytics workspace." }
+    },
+    "dataCollectionEndpointId": {
+      "type": "string",
+      "metadata": { "description": "Full resource ID of the Data Collection Endpoint (DCE). Provides the ingestion URI used by the collector." }
+    },
+    "tableName": {
+      "type": "string",
+      "defaultValue": "Nutanix_CL",
+      "metadata": { "description": "Destination custom table (created by table.json)." }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/dataCollectionRules",
+      "apiVersion": "2023-03-11",
+      "name": "[parameters('dcrName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "dataCollectionEndpointId": "[parameters('dataCollectionEndpointId')]",
+        "streamDeclarations": {
+          "Custom-NutanixInbound": {
+            "columns": [
+              { "name": "TimeGenerated",      "type": "datetime" },
+              { "name": "Category",           "type": "string" },
+              { "name": "NutanixClusterName", "type": "string" },
+              { "name": "NutanixClusterUuid", "type": "string" },
+              { "name": "SourceEntityType",   "type": "string" },
+              { "name": "SourceEntityUuid",   "type": "string" },
+              { "name": "OperationType",      "type": "string" },
+              { "name": "Severity",           "type": "string" },
+              { "name": "Title",              "type": "string" },
+              { "name": "Message",            "type": "string" },
+              { "name": "ActorUser",          "type": "string" },
+              { "name": "SourceIp",           "type": "string" },
+              { "name": "AffectedEntities",   "type": "dynamic" },
+              { "name": "RawPayload",         "type": "dynamic" },
+              { "name": "IngestId",           "type": "string" }
+            ]
+          }
+        },
+        "destinations": {
+          "logAnalytics": [
+            {
+              "workspaceResourceId": "[parameters('workspaceResourceId')]",
+              "name": "sentinelWorkspace"
+            }
+          ]
+        },
+        "dataFlows": [
+          {
+            "streams": [ "Custom-NutanixInbound" ],
+            "destinations": [ "sentinelWorkspace" ],
+            "transformKql": "source | extend Severity = tolower(tostring(Severity)) | extend Category = tolower(tostring(Category))",
+            "outputStream": "[format('Custom-{0}', parameters('tableName'))]"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "dcrImmutableId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), '2023-03-11').immutableId]"
+    },
+    "streamName": {
+      "type": "string",
+      "value": "Custom-NutanixInbound"
+    }
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Microsoft Sentinel scheduled analytics rules for the Nutanix_CL custom table. Covers both security/audit detections and operational/availability alerts. Alert-severity-based rules fire only on 'critical' and 'warning'. Deploy after table.json + the collector are live."
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": { "description": "Name of the Sentinel-enabled Log Analytics workspace." }
+    },
+    "enableRules": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": { "description": "Set false to deploy the rules disabled (review before they create incidents)." }
+    }
+  },
+  "variables": {
+    "apiVersion": "2023-02-01"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-alert-crit-warn'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Critical or Warning alert raised",
+        "description": "A Nutanix Prism alert with severity critical or warning was ingested. Surfaces cluster-level problems for triage.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "entityMappings": [
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-audit-failures'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Repeated failed audit operations by a user",
+        "description": "Five or more failed Nutanix audit operations by the same user within the lookback window. May indicate credential misuse, brute force, or automation with bad credentials.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(Severity) == \"failed\"\n| summarize FailedCount = count(), Operations = make_set(OperationType, 10), Messages = make_set(Message, 5), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by ActorUser, NutanixClusterName\n| where FailedCount >= 5\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "CredentialAccess" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-privileged-change'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Identity or security configuration change",
+        "description": "Create/update/delete audit operation targeting identity or security objects (users, roles, directories, certificates, auth/policy). Tracks privilege and security-posture changes.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"CREATE\", \"UPDATE\", \"DELETE\")\n| where tolower(SourceEntityType) has_any (\"user\", \"role\", \"directory\", \"cert\", \"auth\", \"identity\", \"idp\", \"saml\", \"ldap\", \"policy\")\n    or Message has_any (\"role\", \"permission\", \"password\", \"certificate\", \"directory service\", \"authentication\", \"LDAP\", \"SAML\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Persistence", "PrivilegeEscalation" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-destructive-op'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Destructive VM/host/cluster operation",
+        "description": "Delete or destructive audit operation (delete, power-off, destroy, migrate, evacuate, reset) against a VM, host, cluster, or storage object. Potential impact / sabotage.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) has_any (\"vm\", \"host\", \"cluster\", \"storage_container\", \"volume_group\")\n| where OperationType in~ (\"DELETE\")\n    or Message has_any (\"delete\", \"power off\", \"power_off\", \"destroy\", \"remove\", \"migrate\", \"evacuate\", \"shutdown\", \"reset\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-availability-alert'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Availability or hardware alert (critical/warning)",
+        "description": "Critical or warning Nutanix alert relating to availability, storage, data protection, capacity, hardware, or network. Operational health signal.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| where tostring(RawPayload.classifications) has_any (\"availability\", \"storage\", \"data protection\", \"capacity\", \"hardware\", \"network\")\n    or Message has_any (\"unreachable\", \"down\", \"degraded\", \"offline\", \"disconnected\", \"space\", \"failed disk\", \"fan\", \"temperature\", \"power supply\")\n| extend HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "entityMappings": [
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-ingestion-gap'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Collector ingestion gap (health)",
+        "description": "No Nutanix_CL records ingested in over 2 hours. Indicates the collector, scheduled task, credentials, or network path to Prism has failed.",
+        "severity": "Low",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| summarize LastSeen = max(TimeGenerated)\n| extend GapMinutes = datetime_diff('minute', now(), LastSeen)\n| where GapMinutes > 120",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT6H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": false,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "AllEntities"
+          }
+        }
+      }
+    }
+  ]
+}

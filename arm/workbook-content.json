@@ -1,0 +1,227 @@
+{
+  "version": "Notebook/1.0",
+  "isLocked": false,
+  "fallbackResourceIds": [ "__WORKSPACE_ID__" ],
+  "items": [
+    {
+      "type": 1,
+      "name": "title",
+      "content": {
+        "json": "# Nutanix Health & Security\nOperational and security posture for Nutanix Prism, sourced from the `Nutanix_CL` custom table. Use the time range control to adjust the window. Tiles and charts cover alerts, audit activity, events, and collector health."
+      }
+    },
+    {
+      "type": 9,
+      "name": "parameters",
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "p-timerange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": { "durationMs": 604800000 },
+            "typeSettings": {
+              "selectableValues": [
+                { "durationMs": 3600000 },
+                { "durationMs": 14400000 },
+                { "durationMs": 43200000 },
+                { "durationMs": 86400000 },
+                { "durationMs": 172800000 },
+                { "durationMs": 604800000 },
+                { "durationMs": 2592000000 }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": 3,
+      "name": "overview-tiles",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Overview",
+        "query": "Nutanix_CL\n| where Category != \"test\"\n| summarize Count = count() by Metric = case(\n    Category == \"alert\" and tolower(Severity) in (\"critical\", \"warning\"), \"Critical/Warning Alerts\",\n    Category == \"alert\", \"Other Alerts\",\n    Category == \"audit\" and tolower(Severity) == \"failed\", \"Failed Audits\",\n    Category == \"audit\", \"Audit Operations\",\n    Category == \"event\", \"Events\",\n    \"Other\")\n| order by Count desc",
+        "size": 3,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": { "columnMatch": "Metric", "formatter": 1 },
+          "leftContent": { "columnMatch": "Count", "formatter": 12, "formatOptions": { "palette": "auto" } },
+          "showBorder": true
+        }
+      }
+    },
+    {
+      "type": 3,
+      "name": "alerts-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Alerts over time by severity",
+        "query": "Nutanix_CL\n| where Category == \"alert\"\n| summarize Count = count() by bin(TimeGenerated, 1h), Severity = tolower(Severity)",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "top-alert-types",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Top alert types (critical/warning)",
+        "query": "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| summarize Count = count() by OperationType\n| top 10 by Count desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "audit-ops-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Audit activity over time (by result)",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| summarize Count = count() by bin(TimeGenerated, 1h), Result = tolower(Severity)",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "top-actors",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Most active users (audit)",
+        "query": "Nutanix_CL\n| where Category == \"audit\" and isnotempty(ActorUser)\n| summarize Operations = count() by ActorUser\n| top 10 by Operations desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "top-operations",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Audit operations breakdown",
+        "query": "Nutanix_CL\n| where Category == \"audit\" and isnotempty(OperationType)\n| summarize Count = count() by OperationType\n| top 12 by Count desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "piechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "events-over-time",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Events over time",
+        "query": "Nutanix_CL\n| where Category == \"event\"\n| summarize Count = count() by bin(TimeGenerated, 1h)",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 1,
+      "name": "health-header",
+      "content": { "json": "## Collector health\nConfirms the collector is still ingesting. If 'Minutes since last record' climbs above your collection interval, the collector, scheduled task, credentials, or the path to Prism has failed." }
+    },
+    {
+      "type": 3,
+      "name": "ingestion-health",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Ingestion freshness",
+        "query": "Nutanix_CL\n| summarize LastRecord = max(TimeGenerated), TotalRecords = count()\n| extend ['Minutes since last record'] = datetime_diff('minute', now(), LastRecord)\n| project ['Minutes since last record'], LastRecord, TotalRecords",
+        "size": 4,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": { "columnMatch": "Minutes since last record", "formatter": 12, "formatOptions": { "palette": "redGreen" } },
+          "leftContent": { "columnMatch": "LastRecord", "formatter": 6 },
+          "showBorder": true
+        }
+      },
+      "customWidth": "40"
+    },
+    {
+      "type": 3,
+      "name": "ingestion-timeline",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Records ingested per hour",
+        "query": "Nutanix_CL\n| summarize Records = count() by bin(TimeGenerated, 1h)",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "60"
+    },
+    {
+      "type": 1,
+      "name": "recent-header",
+      "content": { "json": "## Recent critical & warning alerts" }
+    },
+    {
+      "type": 3,
+      "name": "recent-alerts-grid",
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| project TimeGenerated, Severity = tolower(Severity), OperationType, NutanixClusterName, Title, Message\n| order by TimeGenerated desc\n| take 100",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Severity",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  { "operator": "==", "thresholdValue": "critical", "representation": "redBright", "text": "{0}{1}" },
+                  { "operator": "==", "thresholdValue": "warning", "representation": "orange", "text": "{0}{1}" },
+                  { "operator": "Default", "thresholdValue": null, "representation": "gray", "text": "{0}{1}" }
+                ]
+              }
+            }
+          ],
+          "rowLimit": 100,
+          "filter": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Creates the Nutanix custom log table (Nutanix_CL) in a Log Analytics workspace. The schema is intentionally CCP-friendly: a small set of normalized columns plus a dynamic RawPayload so the same table survives a later migration to a Codeless Connector Platform (CCP) connector unchanged."
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": { "description": "Name of the existing Log Analytics workspace." }
+    },
+    "tableName": {
+      "type": "string",
+      "defaultValue": "Nutanix_CL",
+      "metadata": { "description": "Custom table name. Must end in _CL." }
+    },
+    "retentionInDays": {
+      "type": "int",
+      "defaultValue": 90,
+      "metadata": { "description": "Interactive retention for the table (days)." }
+    },
+    "totalRetentionInDays": {
+      "type": "int",
+      "defaultValue": 90,
+      "metadata": { "description": "Total retention (interactive + long-term) in days." }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[format('{0}/{1}', parameters('workspaceName'), parameters('tableName'))]",
+      "properties": {
+        "totalRetentionInDays": "[parameters('totalRetentionInDays')]",
+        "plan": "Analytics",
+        "schema": {
+          "name": "[parameters('tableName')]",
+          "description": "Nutanix Prism Central alerts, audits, and events collected via the Logs Ingestion API.",
+          "columns": [
+            { "name": "TimeGenerated",      "type": "datetime", "description": "Event time (ISO 8601). Required by Azure Monitor." },
+            { "name": "Category",           "type": "string",   "description": "Record type: alert | audit | event." },
+            { "name": "NutanixClusterName", "type": "string",   "description": "Source Prism / cluster friendly name." },
+            { "name": "NutanixClusterUuid", "type": "string",   "description": "Source cluster UUID." },
+            { "name": "SourceEntityType",   "type": "string",   "description": "Entity the record relates to (vm, host, cluster, user, etc.)." },
+            { "name": "SourceEntityUuid",   "type": "string",   "description": "UUID of the related entity." },
+            { "name": "OperationType",      "type": "string",   "description": "Audit operation or alert/event type." },
+            { "name": "Severity",           "type": "string",   "description": "critical | warning | info (normalized)." },
+            { "name": "Title",              "type": "string",   "description": "Short human-readable title." },
+            { "name": "Message",            "type": "string",   "description": "Full message / detailed description." },
+            { "name": "ActorUser",          "type": "string",   "description": "User/principal that triggered an audit action, if any." },
+            { "name": "SourceIp",           "type": "string",   "description": "Client IP for audit actions, if present." },
+            { "name": "AffectedEntities",   "type": "dynamic",  "description": "Array of affected entity references." },
+            { "name": "RawPayload",         "type": "dynamic",  "description": "Unmodified source object from the Prism REST API." },
+            { "name": "IngestId",           "type": "string",   "description": "Collector run/batch id for traceability." }
+          ]
+        }
+      }
+    }
+  ]
+}

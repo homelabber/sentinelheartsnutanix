@@ -1,0 +1,587 @@
+﻿{
+    "$schema":  "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion":  "1.0.0.0",
+    "metadata":  {
+                     "description":  "One-click deploy of the Nutanix -\u003e Microsoft Sentinel data pipeline: Data Collection Endpoint, Nutanix_CL custom table, Data Collection Rule, the Nutanix parser function, and 6 analytics rules. Deploy the workbook separately with arm/deploy-workbook.ps1, and run the on-prem collector (collector/) to feed data in."
+                 },
+    "parameters":  {
+                       "workspaceName":  {
+                                             "type":  "string",
+                                             "metadata":  {
+                                                              "description":  "Name of the existing Sentinel-enabled Log Analytics workspace."
+                                                          }
+                                         },
+                       "location":  {
+                                        "type":  "string",
+                                        "defaultValue":  "[resourceGroup().location]",
+                                        "metadata":  {
+                                                         "description":  "Region. Must match the workspace."
+                                                     }
+                                    },
+                       "dceName":  {
+                                       "type":  "string",
+                                       "defaultValue":  "dce-nutanix",
+                                       "metadata":  {
+                                                        "description":  "Name for the Data Collection Endpoint to create."
+                                                    }
+                                   },
+                       "dcrName":  {
+                                       "type":  "string",
+                                       "defaultValue":  "dcr-nutanix-sentinel",
+                                       "metadata":  {
+                                                        "description":  "Name for the Data Collection Rule."
+                                                    }
+                                   },
+                       "tableName":  {
+                                         "type":  "string",
+                                         "defaultValue":  "Nutanix_CL",
+                                         "metadata":  {
+                                                          "description":  "Custom table name (must end in _CL)."
+                                                      }
+                                     },
+                       "retentionInDays":  {
+                                               "type":  "int",
+                                               "defaultValue":  90
+                                           },
+                       "totalRetentionInDays":  {
+                                                    "type":  "int",
+                                                    "defaultValue":  90
+                                                },
+                       "enableRules":  {
+                                           "type":  "bool",
+                                           "defaultValue":  false,
+                                           "metadata":  {
+                                                            "description":  "Deploy analytics rules enabled (true) or disabled for review (false)."
+                                                        }
+                                       },
+                       "workspaceResourceId":  {
+                                                   "type":  "string",
+                                                   "defaultValue":  "[resourceId(\u0027Microsoft.OperationalInsights/workspaces\u0027, parameters(\u0027workspaceName\u0027))]",
+                                                   "metadata":  {
+                                                                    "description":  "Auto-derived; leave as default."
+                                                                }
+                                               },
+                       "dataCollectionEndpointId":  {
+                                                        "type":  "string",
+                                                        "defaultValue":  "[resourceId(\u0027Microsoft.Insights/dataCollectionEndpoints\u0027, parameters(\u0027dceName\u0027))]",
+                                                        "metadata":  {
+                                                                         "description":  "Auto-derived; leave as default."
+                                                                     }
+                                                    }
+                   },
+    "resources":  [
+                      {
+                          "type":  "Microsoft.Insights/dataCollectionEndpoints",
+                          "apiVersion":  "2023-03-11",
+                          "name":  "[parameters(\u0027dceName\u0027)]",
+                          "location":  "[parameters(\u0027location\u0027)]",
+                          "properties":  {
+                                             "networkAcls":  {
+                                                                 "publicNetworkAccess":  "Enabled"
+                                                             }
+                                         }
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/tables",
+                          "apiVersion":  "2022-10-01",
+                          "name":  "[format(\u0027{0}/{1}\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]",
+                          "properties":  {
+                                             "totalRetentionInDays":  "[parameters(\u0027totalRetentionInDays\u0027)]",
+                                             "plan":  "Analytics",
+                                             "schema":  {
+                                                            "name":  "[parameters(\u0027tableName\u0027)]",
+                                                            "description":  "Nutanix Prism Central alerts, audits, and events collected via the Logs Ingestion API.",
+                                                            "columns":  [
+                                                                            {
+                                                                                "name":  "TimeGenerated",
+                                                                                "type":  "datetime",
+                                                                                "description":  "Event time (ISO 8601). Required by Azure Monitor."
+                                                                            },
+                                                                            {
+                                                                                "name":  "Category",
+                                                                                "type":  "string",
+                                                                                "description":  "Record type: alert | audit | event."
+                                                                            },
+                                                                            {
+                                                                                "name":  "NutanixClusterName",
+                                                                                "type":  "string",
+                                                                                "description":  "Source Prism / cluster friendly name."
+                                                                            },
+                                                                            {
+                                                                                "name":  "NutanixClusterUuid",
+                                                                                "type":  "string",
+                                                                                "description":  "Source cluster UUID."
+                                                                            },
+                                                                            {
+                                                                                "name":  "SourceEntityType",
+                                                                                "type":  "string",
+                                                                                "description":  "Entity the record relates to (vm, host, cluster, user, etc.)."
+                                                                            },
+                                                                            {
+                                                                                "name":  "SourceEntityUuid",
+                                                                                "type":  "string",
+                                                                                "description":  "UUID of the related entity."
+                                                                            },
+                                                                            {
+                                                                                "name":  "OperationType",
+                                                                                "type":  "string",
+                                                                                "description":  "Audit operation or alert/event type."
+                                                                            },
+                                                                            {
+                                                                                "name":  "Severity",
+                                                                                "type":  "string",
+                                                                                "description":  "critical | warning | info (normalized)."
+                                                                            },
+                                                                            {
+                                                                                "name":  "Title",
+                                                                                "type":  "string",
+                                                                                "description":  "Short human-readable title."
+                                                                            },
+                                                                            {
+                                                                                "name":  "Message",
+                                                                                "type":  "string",
+                                                                                "description":  "Full message / detailed description."
+                                                                            },
+                                                                            {
+                                                                                "name":  "ActorUser",
+                                                                                "type":  "string",
+                                                                                "description":  "User/principal that triggered an audit action, if any."
+                                                                            },
+                                                                            {
+                                                                                "name":  "SourceIp",
+                                                                                "type":  "string",
+                                                                                "description":  "Client IP for audit actions, if present."
+                                                                            },
+                                                                            {
+                                                                                "name":  "AffectedEntities",
+                                                                                "type":  "dynamic",
+                                                                                "description":  "Array of affected entity references."
+                                                                            },
+                                                                            {
+                                                                                "name":  "RawPayload",
+                                                                                "type":  "dynamic",
+                                                                                "description":  "Unmodified source object from the Prism REST API."
+                                                                            },
+                                                                            {
+                                                                                "name":  "IngestId",
+                                                                                "type":  "string",
+                                                                                "description":  "Collector run/batch id for traceability."
+                                                                            }
+                                                                        ]
+                                                        }
+                                         }
+                      },
+                      {
+                          "type":  "Microsoft.Insights/dataCollectionRules",
+                          "apiVersion":  "2023-03-11",
+                          "name":  "[parameters(\u0027dcrName\u0027)]",
+                          "location":  "[parameters(\u0027location\u0027)]",
+                          "properties":  {
+                                             "dataCollectionEndpointId":  "[parameters(\u0027dataCollectionEndpointId\u0027)]",
+                                             "streamDeclarations":  {
+                                                                        "Custom-NutanixInbound":  {
+                                                                                                      "columns":  [
+                                                                                                                      {
+                                                                                                                          "name":  "TimeGenerated",
+                                                                                                                          "type":  "datetime"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "Category",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "NutanixClusterName",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "NutanixClusterUuid",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "SourceEntityType",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "SourceEntityUuid",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "OperationType",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "Severity",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "Title",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "Message",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "ActorUser",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "SourceIp",
+                                                                                                                          "type":  "string"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "AffectedEntities",
+                                                                                                                          "type":  "dynamic"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "RawPayload",
+                                                                                                                          "type":  "dynamic"
+                                                                                                                      },
+                                                                                                                      {
+                                                                                                                          "name":  "IngestId",
+                                                                                                                          "type":  "string"
+                                                                                                                      }
+                                                                                                                  ]
+                                                                                                  }
+                                                                    },
+                                             "destinations":  {
+                                                                  "logAnalytics":  [
+                                                                                       {
+                                                                                           "workspaceResourceId":  "[parameters(\u0027workspaceResourceId\u0027)]",
+                                                                                           "name":  "sentinelWorkspace"
+                                                                                       }
+                                                                                   ]
+                                                              },
+                                             "dataFlows":  [
+                                                               {
+                                                                   "streams":  [
+                                                                                   "Custom-NutanixInbound"
+                                                                               ],
+                                                                   "destinations":  [
+                                                                                        "sentinelWorkspace"
+                                                                                    ],
+                                                                   "transformKql":  "source | extend Severity = tolower(tostring(Severity)) | extend Category = tolower(tostring(Category))",
+                                                                   "outputStream":  "[format(\u0027Custom-{0}\u0027, parameters(\u0027tableName\u0027))]"
+                                                               }
+                                                           ]
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.Insights/dataCollectionEndpoints\u0027, parameters(\u0027dceName\u0027))]",
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/savedSearches",
+                          "apiVersion":  "2020-08-01",
+                          "name":  "[format(\u0027{0}/{1}\u0027, parameters(\u0027workspaceName\u0027), \u0027Nutanix\u0027)]",
+                          "properties":  {
+                                             "category":  "Nutanix",
+                                             "displayName":  "Nutanix",
+                                             "functionAlias":  "Nutanix",
+                                             "version":  2,
+                                             "query":  "Nutanix_CL\n| project\n    TimeGenerated,\n    Category,\n    Severity = tolower(Severity),\n    Operation = OperationType,\n    Title,\n    Message,\n    Actor = ActorUser,\n    Cluster = NutanixClusterName,\n    ClusterUuid = NutanixClusterUuid,\n    EntityType = tolower(SourceEntityType),\n    EntityUuid = SourceEntityUuid,\n    AffectedEntities,\n    RawPayload,\n    IngestId"
+                                         }
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-alert-crit-warn\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Critical or Warning alert raised",
+                                             "description":  "A Nutanix Prism alert with severity critical or warning was ingested. Surfaces cluster-level problems for triage.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-audit-failures\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Repeated failed audit operations by a user",
+                                             "description":  "Five or more failed Nutanix audit operations by the same user within the lookback window. May indicate credential misuse, brute force, or automation with bad credentials.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(Severity) == \"failed\"\n| summarize FailedCount = count(), Operations = make_set(OperationType, 10), Messages = make_set(Message, 5), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by ActorUser, NutanixClusterName\n| where FailedCount \u003e= 5\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "CredentialAccess"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-privileged-change\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Identity or security configuration change",
+                                             "description":  "Create/update/delete audit operation targeting identity or security objects (users, roles, directories, certificates, auth/policy). Tracks privilege and security-posture changes.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"CREATE\", \"UPDATE\", \"DELETE\")\n| where tolower(SourceEntityType) has_any (\"user\", \"role\", \"directory\", \"cert\", \"auth\", \"identity\", \"idp\", \"saml\", \"ldap\", \"policy\")\n    or Message has_any (\"role\", \"permission\", \"password\", \"certificate\", \"directory service\", \"authentication\", \"LDAP\", \"SAML\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Persistence",
+                                                             "PrivilegeEscalation"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-destructive-op\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Destructive VM/host/cluster operation",
+                                             "description":  "Delete or destructive audit operation (delete, power-off, destroy, migrate, evacuate, reset) against a VM, host, cluster, or storage object. Potential impact / sabotage.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) has_any (\"vm\", \"host\", \"cluster\", \"storage_container\", \"volume_group\")\n| where OperationType in~ (\"DELETE\")\n    or Message has_any (\"delete\", \"power off\", \"power_off\", \"destroy\", \"remove\", \"migrate\", \"evacuate\", \"shutdown\", \"reset\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-availability-alert\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Availability or hardware alert (critical/warning)",
+                                             "description":  "Critical or warning Nutanix alert relating to availability, storage, data protection, capacity, hardware, or network. Operational health signal.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"alert\"\n| where tolower(Severity) in (\"critical\", \"warning\")\n| where tostring(RawPayload.classifications) has_any (\"availability\", \"storage\", \"data protection\", \"capacity\", \"hardware\", \"network\")\n    or Message has_any (\"unreachable\", \"down\", \"degraded\", \"offline\", \"disconnected\", \"space\", \"failed disk\", \"fan\", \"temperature\", \"power supply\")\n| extend HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-ingestion-gap\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Collector ingestion gap (health)",
+                                             "description":  "No Nutanix_CL records ingested in over 2 hours. Indicates the collector, scheduled task, credentials, or network path to Prism has failed.",
+                                             "severity":  "Low",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| summarize LastSeen = max(TimeGenerated)\n| extend GapMinutes = datetime_diff(\u0027minute\u0027, now(), LastSeen)\n| where GapMinutes \u003e 120",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT6H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  false,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      }
+                  ],
+    "outputs":  {
+                    "dceIngestEndpoint":  {
+                                              "type":  "string",
+                                              "value":  "[reference(resourceId(\u0027Microsoft.Insights/dataCollectionEndpoints\u0027, parameters(\u0027dceName\u0027)), \u00272023-03-11\u0027).logsIngestion.endpoint]"
+                                          },
+                    "dcrImmutableId":  {
+                                           "type":  "string",
+                                           "value":  "[reference(resourceId(\u0027Microsoft.Insights/dataCollectionRules\u0027, parameters(\u0027dcrName\u0027)), \u00272023-03-11\u0027).immutableId]"
+                                       },
+                    "streamName":  {
+                                       "type":  "string",
+                                       "value":  "Custom-NutanixInbound"
+                                   }
+                }
+}

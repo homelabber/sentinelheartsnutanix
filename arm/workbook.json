@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Deploys the Nutanix Health & Security workbook into the Sentinel workspace. serializedData is the stringified workbook-content.json, supplied by deploy-workbook.ps1."
+  },
+  "parameters": {
+    "workbookDisplayName": {
+      "type": "string",
+      "defaultValue": "Nutanix Health & Security",
+      "metadata": { "description": "Display name shown in Sentinel/Monitor Workbooks." }
+    },
+    "workbookId": {
+      "type": "string",
+      "metadata": { "description": "A GUID for the workbook resource name (stable across redeploys)." }
+    },
+    "location": {
+      "type": "string",
+      "metadata": { "description": "Region (match the workspace)." }
+    },
+    "workspaceResourceId": {
+      "type": "string",
+      "metadata": { "description": "Full resource ID of the Log Analytics workspace (used as the workbook sourceId)." }
+    },
+    "serializedData": {
+      "type": "string",
+      "metadata": { "description": "Stringified workbook JSON content." }
+    }
+  },
+  "resources": [
+    {
+      "type": "microsoft.insights/workbooks",
+      "apiVersion": "2022-04-01",
+      "name": "[parameters('workbookId')]",
+      "location": "[parameters('location')]",
+      "kind": "shared",
+      "properties": {
+        "displayName": "[parameters('workbookDisplayName')]",
+        "serializedData": "[parameters('serializedData')]",
+        "version": "1.0",
+        "sourceId": "[parameters('workspaceResourceId')]",
+        "category": "sentinel"
+      }
+    }
+  ],
+  "outputs": {
+    "workbookId": {
+      "type": "string",
+      "value": "[resourceId('microsoft.insights/workbooks', parameters('workbookId'))]"
+    }
+  }
+}

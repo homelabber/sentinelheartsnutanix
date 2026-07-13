@@ -1,0 +1,19 @@
+# Secrets & runtime state — never commit these
+collector/secrets.dat
+collector/host-config.psd1
+collector/config.local.ps1
+collector/state.json
+*.token
+*token*.txt
+ha_tok.txt
+
+# OS / editor cruft
+Thumbs.db
+.DS_Store
+*.swp
+.vs/
+.vscode/
+
+# Temp
+*.tmp
+*.log
