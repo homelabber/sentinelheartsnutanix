@@ -149,6 +149,8 @@ function Get-ClientIp {
     if (-not $raw) { return '' }
 
     $raw = ([string]$raw).Trim()
+    # X-Forwarded-For style "client,proxy1,proxy2" -> keep the first (originating client) IP.
+    if ($raw -match ',') { $raw = ($raw -split ',')[0].Trim() }
     # IPv4 with a trailing :port -> strip the port. Bracketed IPv6 [::1]:port -> unwrap.
     if ($raw -match '^\[(?<ip>[0-9a-fA-F:]+)\](?::\d+)?$') { return $Matches['ip'] }
     if ($raw -match '^(?<ip>(\d{1,3}\.){3}\d{1,3})(?::\d+)?$') { return $Matches['ip'] }
