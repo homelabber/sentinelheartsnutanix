@@ -1,6 +1,6 @@
 ﻿# Sentinel <3 Nutanix
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-0.2.0-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 
 A self-hosted connector that ships **Nutanix Prism Central** telemetry (alerts, events, and audit logs) into **Microsoft Sentinel** via the Azure Monitor **Logs Ingestion API**, plus a ready-to-use detection and visualization pack.
