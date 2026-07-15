@@ -117,6 +117,44 @@ function Invoke-PrismApi {
     }
 }
 
+function Get-ClientIp {
+    <#
+        Extract the originating client IP from a Prism v4 audit record.
+        Verified on PC 7.5.2: audit records carry the client address in
+        parameters[] as { paramName: 'ip_address', paramValue.stringValue: '<ip>[:<port>]' },
+        and the same 'ip:port' is embedded in the message ("... from <ip>:<port> ...").
+        We prefer the structured parameter, strip any trailing :port, and fall back to
+        a regex over the message. Alerts/events have no client IP, so this returns ''.
+    #>
+    param($Entity)
+
+    $raw = $null
+    $params = Get-Prop $Entity 'parameters'
+    if ($params) {
+        foreach ($p in @($params)) {
+            if ((Get-Prop $p 'paramName') -eq 'ip_address') {
+                $pv = Get-Prop $p 'paramValue'
+                $raw = Get-Prop $pv 'stringValue'
+                break
+            }
+        }
+    }
+    if (-not $raw) {
+        # Fallback: pull "from <ip>[:port]" out of the free-text message.
+        $msg = Get-Prop $Entity 'message'
+        if ($msg -and ($msg -match 'from\s+(?<ip>(\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]+)(?::\d+)?')) {
+            $raw = $Matches['ip']
+        }
+    }
+    if (-not $raw) { return '' }
+
+    $raw = ([string]$raw).Trim()
+    # IPv4 with a trailing :port -> strip the port. Bracketed IPv6 [::1]:port -> unwrap.
+    if ($raw -match '^\[(?<ip>[0-9a-fA-F:]+)\](?::\d+)?$') { return $Matches['ip'] }
+    if ($raw -match '^(?<ip>(\d{1,3}\.){3}\d{1,3})(?::\d+)?$') { return $Matches['ip'] }
+    return $raw
+}
+
 function Get-PrismAuthHeader {
     param($User, $Password)
     $pair  = "{0}:{1}" -f $User, $Password
@@ -208,7 +246,7 @@ function ConvertTo-NutanixRecord {
         Title              = [string]$title
         Message            = [string](Get-Prop $Entity 'message')
         ActorUser          = [string]$actor
-        SourceIp           = ''
+        SourceIp           = [string](Get-ClientIp -Entity $Entity)
         AffectedEntities   = @(Get-Prop $Entity 'affectedEntities')
         RawPayload         = $Entity
         IngestId           = $IngestId
