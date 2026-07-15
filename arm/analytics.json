@@ -210,6 +210,243 @@
           }
         }
       }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-bruteforce-success'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Failed logins followed by a successful login (possible brute force)",
+        "description": "The same user had 5+ failed Prism logins and at least one success in the window, with the success after the first failure. Stronger signal than failures alone: a likely successful password-guess / credential-stuffing attempt. Login IP(s) are surfaced from the audit records.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType == \"LOGIN\"\n| extend Outcome = case(Message contains \"failed to log in\" or tolower(Severity) == \"failed\", \"fail\", Message contains \"has logged in\" or tolower(Severity) == \"succeeded\", \"success\", \"other\")\n| where Outcome in (\"fail\", \"success\")\n| summarize Fails = countif(Outcome == \"fail\"), Succeeds = countif(Outcome == \"success\"), FirstFail = minif(TimeGenerated, Outcome == \"fail\"), LastSuccess = maxif(TimeGenerated, Outcome == \"success\"), SourceIps = make_set(SourceIp, 10) by ActorUser, NutanixClusterName\n| where Fails >= 5 and Succeeds >= 1 and LastSuccess > FirstFail\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "CredentialAccess" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-anti-recovery'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Deletion of snapshots / backups / recovery points (anti-recovery)",
+        "description": "A delete/destroy operation targeting a snapshot, protection domain/policy, recovery point, recovery plan, or backup/replication target. Destroying the ability to restore is a classic ransomware precursor (MITRE T1490 Inhibit System Recovery). Review the actor and source IP immediately.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"DELETE\") or Message contains \"delet\" or Message contains \"destroy\" or Message contains \"remov\" or Message contains \"expired\"\n| where tolower(SourceEntityType) has_any (\"snapshot\", \"protection\", \"recovery\", \"backup\", \"replication\", \"vm_recovery_point\")\n    or Message contains \"snapshot\" or Message contains \"protection domain\" or Message contains \"protection policy\" or Message contains \"recovery point\" or Message contains \"recovery plan\" or Message contains \"backup\" or Message contains \"replication\"\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "techniques": [ "T1490" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-defense-evasion'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Logging, syslog, or security control disabled (defense evasion)",
+        "description": "An update/delete that appears to disable audit logging, syslog/log forwarding, encryption, alerting, or authentication. Turning off telemetry or protections is a deliberate anti-forensic move (MITRE T1562 Impair Defenses) and should be alerted on immediately.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"UPDATE\", \"DELETE\", \"CREATE\")\n| where Message contains \"syslog\" or Message contains \"rsyslog\" or Message contains \"log forwarding\" or Message contains \"audit log\"\n    or ((Message contains \"disable\" or Message contains \"turned off\" or Message contains \"removed\") and (Message contains \"syslog\" or Message contains \"audit\" or Message contains \"logging\" or Message contains \"encryption\" or Message contains \"alerting\" or Message contains \"authentication\" or Message contains \"password complexity\" or Message contains \"session timeout\"))\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "DefenseEvasion" ],
+        "techniques": [ "T1562" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-ssh-lockdown-backdoor'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - SSH key added or cluster lockdown disabled (backdoor persistence)",
+        "description": "An SSH public key was added, cluster lockdown mode was disabled, or SSH access was enabled on a CVM/host. These create durable, direct backdoor access to the cluster (MITRE T1098 Account Manipulation / Persistence). Verify the change was authorized.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where Message contains \"public key\" or Message contains \"ssh key\" or Message contains \"authorized_keys\" or Message contains \"cluster lockdown\" or Message contains \"lockdown mode\"\n    or (Message contains \"ssh\" and (Message contains \"enable\" or Message contains \"added\" or Message contains \"key\" or Message contains \"access\"))\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Persistence" ],
+        "techniques": [ "T1098" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-new-credential'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - New user, API key, or service account created (persistence)",
+        "description": "A new local user, API key (User Key), or service account was created. New credentials are a common persistence mechanism (MITRE T1136 Create Account). Legitimate onboarding also triggers this - confirm the new principal is expected.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType == \"CREATE\"\n| where tolower(SourceEntityType) in (\"user\", \"user key\", \"service account\")\n    or Message contains \"created user \" or Message contains \"created user key\" or Message contains \"created service account\" or Message contains \"created a new user\" or Message contains \"api key\"\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Persistence", "PrivilegeEscalation" ],
+        "techniques": [ "T1136" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-password-reset-other'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - Password reset for a different user (possible account takeover)",
+        "description": "A user reset the password of a DIFFERENT account. While admins legitimately reset passwords, an attacker resetting another user's credential is a common takeover / lateral-movement step (MITRE T1098). The target user is extracted from the message.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) == \"password\" or Message contains \"reset password\"\n| where OperationType in~ (\"UPDATE\", \"CREATE\")\n| extend TargetUser = extract(@\"reset password for user (\\S+)\", 1, Message)\n| where isempty(TargetUser) or tolower(TargetUser) != tolower(ActorUser)\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "CredentialAccess", "Persistence" ],
+        "techniques": [ "T1098" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-exfil-path'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - New replication / remote site / export path created (possible exfiltration)",
+        "description": "Creation or change of a remote site, recovery plan, replication target, availability zone, cloud-connect endpoint, or storage-container NFS/whitelist. Attackers stand up a new replication or export path to siphon data off the cluster (MITRE T1537 Transfer Data to Cloud Account).",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"CREATE\", \"UPDATE\")\n| where Message contains \"remote site\" or Message contains \"recovery plan\" or Message contains \"replication target\" or Message contains \"availability zone\" or Message contains \"cloud connect\" or Message contains \"nfs whitelist\" or Message contains \"filesystem whitelist\" or Message contains \"external repository\"\n    or tolower(SourceEntityType) has_any (\"remote\", \"replication\", \"availability_zone\", \"recovery_plan\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Exfiltration" ],
+        "techniques": [ "T1537" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] },
+          { "entityType": "IP", "fieldMappings": [ { "identifier": "Address", "columnName": "IpCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('apiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'nutanix-mass-ops'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Nutanix - High volume of management operations by a single actor (velocity)",
+        "description": "One actor performed 30+ create/update/delete operations (excluding routine auth-token/session churn) within the hour. Wiper, ransomware, and rogue-admin activity often looks like a burst of operations rather than a single event (MITRE T1485/T1489). Tune the threshold to your environment's normal admin cadence.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) !in (\"token\", \"session\")\n| where OperationType in~ (\"CREATE\", \"UPDATE\", \"DELETE\")\n| summarize OpCount = count(), Operations = make_set(OperationType, 5), EntityTypes = make_set(SourceEntityType, 15), SourceIps = make_set(SourceIp, 10), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by ActorUser, NutanixClusterName\n| where OpCount >= 30\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [ "Impact" ],
+        "techniques": [ "T1485", "T1489" ],
+        "entityMappings": [
+          { "entityType": "Account", "fieldMappings": [ { "identifier": "FullName", "columnName": "AccountCustomEntity" } ] },
+          { "entityType": "Host", "fieldMappings": [ { "identifier": "HostName", "columnName": "HostCustomEntity" } ] }
+        ],
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": { "enabled": true, "reopenClosedIncident": false, "lookbackDuration": "PT5H", "matchingMethod": "AllEntities" }
+        }
+      }
     }
   ]
 }
