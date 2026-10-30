@@ -19,11 +19,15 @@
 
 .PARAMETER LookbackMinutes
     Pass through to the collector for the first run when no state.json exists.
+
+.PARAMETER InventoryIntervalHours
+    Pass through to the collector: how often to snapshot AOS/PC/AHV versions (0 disables).
 #>
 [CmdletBinding()]
 param(
     [switch] $WhatIfNoSend,
-    [int]    $LookbackMinutes = 60
+    [int]    $LookbackMinutes = 60,
+    [int]    $InventoryIntervalHours = 6
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,14 +69,15 @@ $env:DCR_IMMUTABLE_ID  = $cfg.DcrImmutableId
 $env:DCR_STREAM_NAME   = $cfg.StreamName
 $env:PRISM_BASE_URL    = $cfg.PrismBaseUrl
 $env:PRISM_USER        = $cfg.PrismUser
-$env:PRISM_PASSWORD    = Unprotect-Value $secrets.PrismPassword
+if ($secrets.PSObject.Properties['PrismApiKey'])   { $env:PRISM_API_KEY  = Unprotect-Value $secrets.PrismApiKey }
+if ($secrets.PSObject.Properties['PrismPassword']) { $env:PRISM_PASSWORD = Unprotect-Value $secrets.PrismPassword }
 $env:PRISM_API_VERSION = $cfg.PrismApiVersion
 if ($cfg.ContainsKey('PrismInsecureTls') -and $cfg.PrismInsecureTls) { $env:PRISM_INSECURE_TLS = '1' }
 
 try {
-    & $collector -WhatIfNoSend:$WhatIfNoSend -LookbackMinutes $LookbackMinutes
+    & $collector -WhatIfNoSend:$WhatIfNoSend -LookbackMinutes $LookbackMinutes -InventoryIntervalHours $InventoryIntervalHours
 }
 finally {
     # Scrub secrets from the environment of this process before exit.
-    Remove-Item Env:AAD_CLIENT_SECRET, Env:PRISM_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:AAD_CLIENT_SECRET, Env:PRISM_PASSWORD, Env:PRISM_API_KEY -ErrorAction SilentlyContinue
 }

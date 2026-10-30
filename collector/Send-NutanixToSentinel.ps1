@@ -14,9 +14,14 @@
     the same Prism REST call declaratively in the connector's pollingConfig -- the
     table schema, DCR, and transformKql all carry over unchanged.
 
+    Every few hours (-InventoryIntervalHours) it also snapshots AOS / Prism Central /
+    hypervisor versions from the clustermgmt v4 API as Category='inventory' records, so
+    Sentinel can flag clusters still exposed to published Nutanix advisories.
+
 .NOTES
     Auth to Azure: Microsoft Entra app (client credentials), scope https://monitor.azure.com//.default
-    Auth to Prism: basic auth (username/password) or session; adjust as your environment requires.
+    Auth to Prism: a Prism Central service-account API key (PRISM_API_KEY, sent as
+    X-ntnx-api-key) is preferred; basic auth (PRISM_USER/PRISM_PASSWORD) is the fallback.
 
     Configure via environment variables (recommended) or edit the $Config block below.
     Do NOT commit secrets. Prefer a Key Vault / managed identity when running in Azure.
@@ -26,6 +31,7 @@
 param(
     [string] $StatePath = (Join-Path $PSScriptRoot 'state.json'),
     [int]    $LookbackMinutes = 60,
+    [int]    $InventoryIntervalHours = 6,   # 0 disables the version inventory
     [switch] $WhatIfNoSend
 )
 
@@ -48,18 +54,25 @@ $Config = [ordered]@{
 
     # --- Nutanix Prism Central (v4 REST API; PC 7.x) ---
     PrismBaseUrl   = $env:PRISM_BASE_URL      # e.g. https://prism-central.example.local:9440
-    PrismUser      = $env:PRISM_USER
+    PrismApiKey    = $env:PRISM_API_KEY       # preferred: PC service-account API key
+    PrismUser      = $env:PRISM_USER          # fallback: basic auth
     PrismPassword  = $env:PRISM_PASSWORD
     PrismInsecure  = [bool]($env:PRISM_INSECURE_TLS)   # set to any value to skip cert validation (lab only)
     # monitoring namespace API version. v4.0 is GA on PC 7.5.2; v4.1/v4.2 also served on newer builds.
     PrismApiVer    = ($env:PRISM_API_VERSION, 'v4.0' | Where-Object { $_ })[0]
+    # clustermgmt namespace API version (used for the version inventory).
+    ClusterApiVer  = ($env:PRISM_CLUSTERMGMT_API_VERSION, 'v4.0' | Where-Object { $_ })[0]
     PageLimit      = 100                        # v4 max page size
 }
 
-foreach ($k in 'TenantId','ClientId','ClientSecret','DceIngestUri','DcrImmutableId','PrismBaseUrl','PrismUser','PrismPassword') {
+foreach ($k in 'TenantId','ClientId','ClientSecret','DceIngestUri','DcrImmutableId','PrismBaseUrl') {
     if ([string]::IsNullOrWhiteSpace($Config[$k])) {
         throw "Missing required configuration: $k. Set the corresponding environment variable."
     }
+}
+if ([string]::IsNullOrWhiteSpace($Config.PrismApiKey) -and
+    ([string]::IsNullOrWhiteSpace($Config.PrismUser) -or [string]::IsNullOrWhiteSpace($Config.PrismPassword))) {
+    throw "Missing Prism credentials: set PRISM_API_KEY, or both PRISM_USER and PRISM_PASSWORD."
 }
 
 # Lab-only: allow self-signed Prism certs when PRISM_INSECURE_TLS is set.
@@ -158,10 +171,15 @@ function Get-ClientIp {
 }
 
 function Get-PrismAuthHeader {
-    param($User, $Password)
-    $pair  = "{0}:{1}" -f $User, $Password
-    $b64   = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
-    return @{ Authorization = "Basic $b64"; 'Accept' = 'application/json'; 'Content-Type' = 'application/json' }
+    param($User, $Password, $ApiKey)
+    $h = @{ 'Accept' = 'application/json'; 'Content-Type' = 'application/json' }
+    if ($ApiKey) {
+        $h['X-ntnx-api-key'] = $ApiKey
+    } else {
+        $pair = "{0}:{1}" -f $User, $Password
+        $h['Authorization'] = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+    }
+    return $h
 }
 
 function Invoke-PrismV4List {
@@ -200,7 +218,7 @@ function Invoke-PrismV4List {
 # Normalization -> Custom-NutanixInbound stream schema (Nutanix v4 serviceability models)
 # ------------------------------------------------------------------------------------
 function ConvertTo-NutanixRecord {
-    param($Entity, [ValidateSet('alert','event','audit')][string]$Category, [string]$IngestId)
+    param($Entity, [ValidateSet('alert','event','audit','inventory')][string]$Category, [string]$IngestId)
 
     # creationTime is ISO 8601 (UTC) in v4. Fall back to now if a record omits it.
     $created = Get-Prop $Entity 'creationTime'
@@ -256,6 +274,91 @@ function ConvertTo-NutanixRecord {
 }
 
 # ------------------------------------------------------------------------------------
+# Version inventory (clustermgmt v4) -> Category='inventory' records
+#   SourceEntityType = product (AOS | PrismCentral | AHV | <hypervisor type>)
+#   Title            = dotted version (e.g. 7.5.1.2), consumed by the vulnerable-version rule
+# ------------------------------------------------------------------------------------
+function Get-DottedVersion {
+    # Pull the first 3-4 part dotted version (e.g. 7.5.1.2, 10.3.1.14) out of a build string.
+    param([string]$Text)
+    if ($Text -and $Text -match '(?<![\d.])(?<v>\d{1,2}\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?)(?![\d])') { return $Matches['v'] }
+    return $null
+}
+
+function Invoke-PrismV4ListAll {
+    # Simple paged GET for config endpoints (no watermark; inventories are small).
+    param($BaseUrl, $Headers, [string]$Path, [int]$Limit)
+    $all = New-Object System.Collections.Generic.List[object]
+    $page = 0
+    do {
+        $resp = Invoke-PrismApi -Uri "$BaseUrl$Path`?`$page=$page&`$limit=$Limit" -Headers $Headers
+        $data = @(Get-Prop $resp 'data')
+        if ($data.Count -gt 0) { $all.AddRange($data) }
+        $page++
+    } while ($data.Count -eq $Limit -and $page -lt 50)
+    return $all
+}
+
+function New-InventoryRecord {
+    param($Entity, [string]$Product, [string]$Version, [string]$Name, [string]$EntityUuid,
+          [string]$ClusterName, [string]$ClusterUuid, [string]$IngestId)
+    [pscustomobject]@{
+        TimeGenerated      = (Get-Date).ToUniversalTime().ToString('o')
+        Category           = 'inventory'
+        NutanixClusterName = [string]$ClusterName
+        NutanixClusterUuid = [string]$ClusterUuid
+        SourceEntityType   = $Product
+        SourceEntityUuid   = [string]$EntityUuid
+        OperationType      = 'VERSION'
+        Severity           = 'info'
+        Title              = [string]$Version
+        Message            = "$Product $Version on $Name"
+        ActorUser          = ''
+        SourceIp           = ''
+        AffectedEntities   = @()
+        RawPayload         = $Entity
+        IngestId           = $IngestId
+    }
+}
+
+function Get-NutanixInventory {
+    param($BaseUrl, $Headers, [string]$ApiVersion, [int]$Limit, [string]$IngestId)
+    $out = New-Object System.Collections.Generic.List[object]
+
+    # Clusters (Prism Central lists itself as a cluster whose clusterFunction includes PRISM_CENTRAL).
+    foreach ($c in (Invoke-PrismV4ListAll -BaseUrl $BaseUrl -Headers $Headers -Limit $Limit `
+                        -Path "/api/clustermgmt/$ApiVersion/config/clusters")) {
+        $cfg   = Get-Prop $c 'config'
+        $build = Get-Prop $cfg 'buildInfo'
+        $func  = @(Get-Prop $cfg 'clusterFunction') -join ','
+        $product = if ($func -match 'PRISM_CENTRAL') { 'PrismCentral' } else { 'AOS' }
+        $raw = Get-Prop $build 'version'
+        $ver = Get-DottedVersion $raw
+        if (-not $ver) { $ver = Get-DottedVersion (Get-Prop $build 'fullVersion') }
+        if (-not $ver) { $ver = [string]$raw }   # e.g. legacy 'pc.2024.3' -- the rule treats it as out of support
+        $name = Get-Prop $c 'name'
+        $out.Add((New-InventoryRecord -Entity $c -Product $product -Version $ver -Name $name `
+                    -EntityUuid (Get-Prop $c 'extId') -ClusterName $name -ClusterUuid (Get-Prop $c 'extId') -IngestId $IngestId))
+    }
+
+    # Hosts -> hypervisor version (AHV etc.).
+    foreach ($h in (Invoke-PrismV4ListAll -BaseUrl $BaseUrl -Headers $Headers -Limit $Limit `
+                        -Path "/api/clustermgmt/$ApiVersion/config/hosts")) {
+        $hv      = Get-Prop $h 'hypervisor'
+        $hvType  = [string](Get-Prop $hv 'type')
+        $product = if ($hvType) { $hvType.ToUpperInvariant() } else { 'HYPERVISOR' }
+        $full    = [string](Get-Prop $hv 'fullName')
+        $ver     = Get-DottedVersion $full
+        if (-not $ver) { $ver = $full }
+        if (-not $ver) { continue }
+        $cl = Get-Prop $h 'cluster'
+        $out.Add((New-InventoryRecord -Entity $h -Product $product -Version $ver -Name (Get-Prop $h 'hostName') `
+                    -EntityUuid (Get-Prop $h 'extId') -ClusterName (Get-Prop $cl 'name') -ClusterUuid (Get-Prop $cl 'uuid') -IngestId $IngestId))
+    }
+    return $out
+}
+
+# ------------------------------------------------------------------------------------
 # Send to Logs Ingestion API (batched, <1MB per request)
 # ------------------------------------------------------------------------------------
 function Send-Batch {
@@ -303,47 +406,88 @@ function Send-ToLogsIngestion {
 }
 
 # ------------------------------------------------------------------------------------
-# State (watermark) handling
+# State (per-resource watermarks)
+#   Each resource keeps its own high-water mark = newest record actually sent. A resource
+#   whose fetch fails keeps its old watermark, so nothing is skipped on the next run.
+#   Legacy state files (single lastRunUtc) are honoured as the starting point.
 # ------------------------------------------------------------------------------------
 $state = if (Test-Path $StatePath) { Get-Content $StatePath -Raw | ConvertFrom-Json } else { $null }
-$watermark = if ($state -and $state.lastRunUtc) { [datetime]$state.lastRunUtc } else { (Get-Date).ToUniversalTime().AddMinutes(-$LookbackMinutes) }
-$ingestId = [guid]::NewGuid().ToString()
-Write-Host "Watermark (UTC): $($watermark.ToString('o'))  IngestId: $ingestId"
+$defaultWm = (Get-Date).ToUniversalTime().AddMinutes(-$LookbackMinutes)
+$legacyWm  = Get-Prop $state 'lastRunUtc'
+if ($legacyWm) { $defaultWm = ([datetime]$legacyWm).ToUniversalTime() }
+$savedWms  = Get-Prop $state 'watermarks'
+$ingestId  = [guid]::NewGuid().ToString()
+
+$resources  = [ordered]@{ alerts = 'alert'; events = 'event'; audits = 'audit' }
+$watermarks = @{}
+foreach ($res in $resources.Keys) {
+    $w = Get-Prop $savedWms $res
+    $watermarks[$res] = if ($w) { ([datetime]$w).ToUniversalTime() } else { $defaultWm }
+    Write-Host "Watermark $res (UTC): $($watermarks[$res].ToString('o'))"
+}
+Write-Host "IngestId: $ingestId"
 
 # ------------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------------
-$prismHeaders = Get-PrismAuthHeader -User $Config.PrismUser -Password $Config.PrismPassword
+$prismHeaders = Get-PrismAuthHeader -User $Config.PrismUser -Password $Config.PrismPassword -ApiKey $Config.PrismApiKey
 $token = Get-AzMonitorToken -TenantId $Config.TenantId -ClientId $Config.ClientId -ClientSecret $Config.ClientSecret
 
-$records = New-Object System.Collections.Generic.List[object]
+$new = New-Object System.Collections.Generic.List[object]
+$newWatermarks = @{}
 
 # v4 serviceability endpoints (Prism Central 7.x): alerts, events, audits.
-$resources = @{ alerts = 'alert'; events = 'event'; audits = 'audit' }
 foreach ($res in $resources.Keys) {
     $category = $resources[$res]
+    $wm = $watermarks[$res]
+    $newWatermarks[$res] = $wm
     try {
         $items = Invoke-PrismV4List -BaseUrl $Config.PrismBaseUrl -Headers $prismHeaders `
-                    -Resource $res -ApiVersion $Config.PrismApiVer -Limit $Config.PageLimit -Watermark $watermark
-        $ok = 0; $bad = 0
+                    -Resource $res -ApiVersion $Config.PrismApiVer -Limit $Config.PageLimit -Watermark $wm
+        $ok = 0; $bad = 0; $fresh = 0
         foreach ($it in $items) {
-            try { $records.Add((ConvertTo-NutanixRecord -Entity $it -Category $category -IngestId $ingestId)); $ok++ }
-            catch { $bad++ }
+            try { $rec = ConvertTo-NutanixRecord -Entity $it -Category $category -IngestId $ingestId; $ok++ }
+            catch { $bad++; continue }
+            $t = ([datetime]$rec.TimeGenerated).ToUniversalTime()
+            if ($t -gt $wm) {
+                $new.Add($rec); $fresh++
+                if ($t -gt $newWatermarks[$res]) { $newWatermarks[$res] = $t }
+            }
         }
-        Write-Host "  $res : fetched $($items.Count) (normalized $ok, skipped $bad)"
+        Write-Host "  $res : fetched $($items.Count) (normalized $ok, skipped $bad, new $fresh)"
     } catch {
-        Write-Warning "  $res fetch failed (check API version '$($Config.PrismApiVer)' / permissions): $($_.Exception.Message)"
+        Write-Warning "  $res fetch failed (check API version '$($Config.PrismApiVer)' / permissions); watermark held: $($_.Exception.Message)"
     }
 }
 
-# Incremental filter by watermark on the normalized TimeGenerated.
-$new = @($records | Where-Object { [datetime]$_.TimeGenerated -gt $watermark })
-Write-Host "Fetched $($records.Count) records; $($new.Count) newer than watermark."
+# Version inventory (best effort, every -InventoryIntervalHours).
+$lastInv = Get-Prop $state 'lastInventoryUtc'
+$lastInventoryUtc = if ($lastInv) { ([datetime]$lastInv).ToUniversalTime() } else { $null }
+if ($InventoryIntervalHours -gt 0 -and
+    (-not $lastInventoryUtc -or $lastInventoryUtc -le (Get-Date).ToUniversalTime().AddHours(-$InventoryIntervalHours))) {
+    try {
+        $inv = @(Get-NutanixInventory -BaseUrl $Config.PrismBaseUrl -Headers $prismHeaders `
+                    -ApiVersion $Config.ClusterApiVer -Limit $Config.PageLimit -IngestId $ingestId)
+        foreach ($r in $inv) { $new.Add($r) }
+        $lastInventoryUtc = (Get-Date).ToUniversalTime()
+        Write-Host "  inventory : $($inv.Count) version records"
+    } catch {
+        Write-Warning "  inventory fetch failed (clustermgmt '$($Config.ClusterApiVer)'); will retry next run: $($_.Exception.Message)"
+    }
+}
+
+Write-Host "$($new.Count) records newer than their watermarks (incl. inventory)."
 
 $sent = Send-ToLogsIngestion -Records $new -Token $token -DceIngestUri $Config.DceIngestUri -DcrImmutableId $Config.DcrImmutableId -StreamName $Config.StreamName
 Write-Host "Sent $sent records to Logs Ingestion API."
 
-# Advance watermark only after a successful send.
-@{ lastRunUtc = (Get-Date).ToUniversalTime().ToString('o'); lastIngestId = $ingestId; lastSent = $sent } |
-    ConvertTo-Json | Set-Content -Path $StatePath -Encoding UTF8
-Write-Host "State saved to $StatePath"
+# Persist watermarks only after a successful send (Send-ToLogsIngestion throws on failure).
+$wmOut = [ordered]@{}
+foreach ($res in $resources.Keys) { $wmOut[$res] = $newWatermarks[$res].ToString('o') }
+[ordered]@{
+    watermarks       = $wmOut
+    lastInventoryUtc = if ($lastInventoryUtc) { $lastInventoryUtc.ToString('o') } else { $null }
+    lastRunUtc       = (Get-Date).ToUniversalTime().ToString('o')
+    lastIngestId     = $ingestId
+    lastSent         = $sent
+} | ConvertTo-Json | Set-Content -Path $StatePath -Encoding UTF8

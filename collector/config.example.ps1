@@ -13,9 +13,14 @@ $env:DCR_STREAM_NAME   = "Custom-NutanixInbound"
 
 # --- Nutanix Prism Central (v4 REST API; verified on PC 7.5.2) ---
 $env:PRISM_BASE_URL    = "https://prism-central.example.local:9440"
+# Preferred: a Prism Central service-account API key (sent as X-ntnx-api-key).
+# $env:PRISM_API_KEY   = "<prism-api-key>"
+# Fallback: basic auth (ignored when PRISM_API_KEY is set).
 $env:PRISM_USER        = "svc-sentinel"
 $env:PRISM_PASSWORD    = "<prism-password>"
 # monitoring namespace API version. v4.0 is GA on 7.5.2; set v4.1/v4.2 only if your build serves them.
 $env:PRISM_API_VERSION = "v4.0"
+# clustermgmt namespace API version, used for the AOS/PC/AHV version inventory.
+$env:PRISM_CLUSTERMGMT_API_VERSION = "v4.0"
 # Lab only: set to skip TLS validation for self-signed Prism certs. Leave unset in production.
 # $env:PRISM_INSECURE_TLS = "1"

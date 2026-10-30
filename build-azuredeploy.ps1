@@ -41,7 +41,7 @@ $resources = @($dce, $table, $dcr, $parser) + $rules
 $template = [ordered]@{
     '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#'
     contentVersion = '1.0.0.0'
-    metadata       = [ordered]@{ description = 'One-click deploy of the Nutanix -> Microsoft Sentinel data pipeline: Data Collection Endpoint, Nutanix_CL custom table, Data Collection Rule, the Nutanix parser function, and 6 analytics rules. Deploy the workbook separately with arm/deploy-workbook.ps1, and run the on-prem collector (collector/) to feed data in.' }
+    metadata       = [ordered]@{ description = "One-click deploy of the Nutanix -> Microsoft Sentinel data pipeline: Data Collection Endpoint, Nutanix_CL custom table, Data Collection Rule, the Nutanix parser function, and $(@($rules).Count) analytics rules. Deploy the workbook separately with arm/deploy-workbook.ps1, and run the on-prem collector (collector/) to feed data in." }
     parameters     = [ordered]@{
         workspaceName            = [ordered]@{ type='string';  metadata=@{ description='Name of the existing Sentinel-enabled Log Analytics workspace.' } }
         location                 = [ordered]@{ type='string';  defaultValue='[resourceGroup().location]'; metadata=@{ description='Region. Must match the workspace.' } }

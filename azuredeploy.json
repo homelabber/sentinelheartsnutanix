@@ -2,7 +2,7 @@
     "$schema":  "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion":  "1.0.0.0",
     "metadata":  {
-                     "description":  "One-click deploy of the Nutanix -\u003e Microsoft Sentinel data pipeline: Data Collection Endpoint, Nutanix_CL custom table, Data Collection Rule, the Nutanix parser function, and 6 analytics rules. Deploy the workbook separately with arm/deploy-workbook.ps1, and run the on-prem collector (collector/) to feed data in."
+                     "description":  "One-click deploy of the Nutanix -\u003e Microsoft Sentinel data pipeline: Data Collection Endpoint, Nutanix_CL custom table, Data Collection Rule, the Nutanix parser function, and 21 analytics rules. Deploy the workbook separately with arm/deploy-workbook.ps1, and run the on-prem collector (collector/) to feed data in."
                  },
     "parameters":  {
                        "workspaceName":  {
@@ -542,12 +542,12 @@
                           "kind":  "Scheduled",
                           "properties":  {
                                              "displayName":  "Nutanix - Collector ingestion gap (health)",
-                                             "description":  "No Nutanix_CL records ingested in over 2 hours. Indicates the collector, scheduled task, credentials, or network path to Prism has failed.",
+                                             "description":  "No Nutanix_CL records ingested in over 2 hours (or none at all in the last 2 days). Indicates the collector, scheduled task, credentials, or network path to Prism has failed.",
                                              "severity":  "Low",
                                              "enabled":  "[parameters(\u0027enableRules\u0027)]",
-                                             "query":  "Nutanix_CL\n| summarize LastSeen = max(TimeGenerated)\n| extend GapMinutes = datetime_diff(\u0027minute\u0027, now(), LastSeen)\n| where GapMinutes \u003e 120",
+                                             "query":  "// queryPeriod is 2 days so a dead collector still returns a (null) LastSeen row that we can alert on.\nNutanix_CL\n| summarize LastSeen = max(TimeGenerated)\n| extend GapMinutes = datetime_diff(\u0027minute\u0027, now(), coalesce(LastSeen, ago(2d)))\n| where GapMinutes \u003e 120",
                                              "queryFrequency":  "PT1H",
-                                             "queryPeriod":  "PT6H",
+                                             "queryPeriod":  "P2D",
                                              "triggerOperator":  "GreaterThan",
                                              "triggerThreshold":  0,
                                              "suppressionDuration":  "PT5H",
@@ -559,6 +559,969 @@
                                                                            "createIncident":  true,
                                                                            "groupingConfiguration":  {
                                                                                                          "enabled":  false,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-bruteforce-success\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Failed logins followed by a successful login (possible brute force)",
+                                             "description":  "The same user had 5+ failed Prism logins and at least one success in the window, with the success after the first failure. Stronger signal than failures alone: a likely successful password-guess / credential-stuffing attempt. Login IP(s) are surfaced from the audit records.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType == \"LOGIN\"\n| extend Outcome = case(Message contains \"failed to log in\" or tolower(Severity) == \"failed\", \"fail\", Message contains \"has logged in\" or tolower(Severity) == \"succeeded\", \"success\", \"other\")\n| where Outcome in (\"fail\", \"success\")\n| summarize Fails = countif(Outcome == \"fail\"), Succeeds = countif(Outcome == \"success\"), FirstFail = minif(TimeGenerated, Outcome == \"fail\"), LastSuccess = maxif(TimeGenerated, Outcome == \"success\"), SourceIps = make_set(SourceIp, 10) by ActorUser, NutanixClusterName\n| where Fails \u003e= 5 and Succeeds \u003e= 1 and LastSuccess \u003e FirstFail\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "CredentialAccess"
+                                                         ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-anti-recovery\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Deletion of snapshots / backups / recovery points (anti-recovery)",
+                                             "description":  "A delete/destroy operation targeting a snapshot, protection domain/policy, recovery point, recovery plan, or backup/replication target. Destroying the ability to restore is a classic ransomware precursor (MITRE T1490 Inhibit System Recovery). Review the actor and source IP immediately.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"DELETE\") or Message contains \"delet\" or Message contains \"destroy\" or Message contains \"remov\" or Message contains \"expired\"\n| where tolower(SourceEntityType) has_any (\"snapshot\", \"protection\", \"recovery\", \"backup\", \"replication\", \"vm_recovery_point\")\n    or Message contains \"snapshot\" or Message contains \"protection domain\" or Message contains \"protection policy\" or Message contains \"recovery point\" or Message contains \"recovery plan\" or Message contains \"backup\" or Message contains \"replication\"\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1490"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-defense-evasion\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Logging, syslog, or security control disabled (defense evasion)",
+                                             "description":  "An update/delete that appears to disable audit logging, syslog/log forwarding, encryption, alerting, or authentication. Turning off telemetry or protections is a deliberate anti-forensic move (MITRE T1562 Impair Defenses) and should be alerted on immediately.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"UPDATE\", \"DELETE\", \"CREATE\")\n| where Message contains \"syslog\" or Message contains \"rsyslog\" or Message contains \"log forwarding\" or Message contains \"audit log\"\n    or ((Message contains \"disable\" or Message contains \"turned off\" or Message contains \"removed\") and (Message contains \"syslog\" or Message contains \"audit\" or Message contains \"logging\" or Message contains \"encryption\" or Message contains \"alerting\" or Message contains \"authentication\" or Message contains \"password complexity\" or Message contains \"session timeout\"))\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "DefenseEvasion"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1562"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-ssh-lockdown-backdoor\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - SSH key added or cluster lockdown disabled (backdoor persistence)",
+                                             "description":  "An SSH public key was added, cluster lockdown mode was disabled, or SSH access was enabled on a CVM/host. These create durable, direct backdoor access to the cluster (MITRE T1098 Account Manipulation / Persistence). Verify the change was authorized.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where Message contains \"public key\" or Message contains \"ssh key\" or Message contains \"authorized_keys\" or Message contains \"cluster lockdown\" or Message contains \"lockdown mode\"\n    or (Message contains \"ssh\" and (Message contains \"enable\" or Message contains \"added\" or Message contains \"key\" or Message contains \"access\"))\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Persistence"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1098"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-new-credential\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - New user, API key, or service account created (persistence)",
+                                             "description":  "A new local user, API key (User Key), or service account was created. New credentials are a common persistence mechanism (MITRE T1136 Create Account). Legitimate onboarding also triggers this - confirm the new principal is expected.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType == \"CREATE\"\n| where tolower(SourceEntityType) in (\"user\", \"user key\", \"service account\")\n    or Message contains \"created user \" or Message contains \"created user key\" or Message contains \"created service account\" or Message contains \"created a new user\" or Message contains \"api key\"\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Persistence",
+                                                             "PrivilegeEscalation"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1136"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-password-reset-other\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Password reset for a different user (possible account takeover)",
+                                             "description":  "A user reset the password of a DIFFERENT account. While admins legitimately reset passwords, an attacker resetting another user\u0027s credential is a common takeover / lateral-movement step (MITRE T1098). The target user is extracted from the message.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) == \"password\" or Message contains \"reset password\"\n| where OperationType in~ (\"UPDATE\", \"CREATE\")\n| extend TargetUser = extract(@\"reset password for user (\\S+)\", 1, Message)\n| where isempty(TargetUser) or tolower(TargetUser) != tolower(ActorUser)\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "CredentialAccess",
+                                                             "Persistence"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1098"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-exfil-path\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - New replication / remote site / export path created (possible exfiltration)",
+                                             "description":  "Creation or change of a remote site, recovery plan, replication target, availability zone, cloud-connect endpoint, or storage-container NFS/whitelist. Attackers stand up a new replication or export path to siphon data off the cluster (MITRE T1537 Transfer Data to Cloud Account).",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where OperationType in~ (\"CREATE\", \"UPDATE\")\n| where Message contains \"remote site\" or Message contains \"recovery plan\" or Message contains \"replication target\" or Message contains \"availability zone\" or Message contains \"cloud connect\" or Message contains \"nfs whitelist\" or Message contains \"filesystem whitelist\" or Message contains \"external repository\"\n    or tolower(SourceEntityType) has_any (\"remote\", \"replication\", \"availability_zone\", \"recovery_plan\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Exfiltration"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1537"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-mass-ops\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - High volume of management operations by a single actor (velocity)",
+                                             "description":  "One actor performed 30+ create/update/delete operations (excluding routine auth-token/session churn) within the hour. Wiper, ransomware, and rogue-admin activity often looks like a burst of operations rather than a single event (MITRE T1485/T1489). Tune the threshold to your environment\u0027s normal admin cadence.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "Nutanix_CL\n| where Category == \"audit\"\n| where tolower(SourceEntityType) !in (\"token\", \"session\")\n| where OperationType in~ (\"CREATE\", \"UPDATE\", \"DELETE\")\n| summarize OpCount = count(), Operations = make_set(OperationType, 5), EntityTypes = make_set(SourceEntityType, 15), SourceIps = make_set(SourceIp, 10), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by ActorUser, NutanixClusterName\n| where OpCount \u003e= 30\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1485",
+                                                                "T1489"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-change-without-login\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Admin changes with no recorded login (possible auth bypass, CVE-2026-84731)",
+                                             "description":  "An account made CREATE/UPDATE/DELETE changes in the last hour but has no successful Prism login recorded in the previous day. NXSA-0058 / CVE-2026-84731 (CVSS 9.8, public PoC) allows unauthenticated Prism access, which can surface as changes from an account that never logged in. Add API-key or automation accounts to ExcludedActors to tune.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "// Accounts permitted to make changes without an interactive login (API-key automation, CI/CD, etc.).\nlet ExcludedActors = dynamic([]);\nlet RecentLogins = Nutanix_CL\n| where TimeGenerated \u003e ago(1d)\n| where Category == \"audit\" and OperationType == \"LOGIN\"\n| where Message contains \"has logged in\" or tolower(Severity) == \"succeeded\"\n| distinct Actor = tolower(ActorUser);\nNutanix_CL\n| where TimeGenerated \u003e ago(1h)\n| where Category == \"audit\"\n| where tolower(SourceEntityType) !in (\"token\", \"session\")\n| where OperationType in~ (\"CREATE\", \"UPDATE\", \"DELETE\")\n| where isnotempty(ActorUser)\n| extend Actor = tolower(ActorUser)\n| where Actor !in (ExcludedActors)\n| join kind=leftanti RecentLogins on Actor\n| summarize OpCount = count(), Operations = make_set(OperationType, 5), EntityTypes = make_set(SourceEntityType, 15), Messages = make_set(Message, 10), SourceIps = make_set(SourceIp, 10), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by ActorUser, NutanixClusterName\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = tostring(SourceIps[0])",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "P1D",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "InitialAccess"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1190"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-vulnerable-version\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Vulnerable or unsupported AOS / Prism Central / AHV version (inventory)",
+                                             "description":  "Uses the collector version inventory (Category == \"inventory\") to flag clusters, Prism Central instances and AHV hosts running a release below the fix for NXSA-0058 (CVE-2026-84731) or the AHV kernel advisories (CVE-2026-31431, CVE-2026-53362, CVE-2026-46300 - all in CISA KEV), or a release train older than the advisories cover. Update the FixedVersions table as new advisories are published.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "// Fixed releases per advisory. Keep this table current as Nutanix publishes new NXSAs.\nlet FixedVersions = datatable(Product:string, Train:string, FixedIn:string, Advisory:string, Cves:string)[\n    \"AOS\",          \"7.6\",  \"7.6.0.8\",   \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"AOS\",          \"7.5\",  \"7.5.2\",     \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"AOS\",          \"7.3\",  \"7.3.1.18\",  \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"PrismCentral\", \"7.6\",  \"7.6.0.8\",   \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"PrismCentral\", \"7.5\",  \"7.5.2\",     \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"PrismCentral\", \"7.3\",  \"7.3.1.18\",  \"NXSA-0058\", \"CVE-2026-84731 (Prism auth bypass, public PoC)\",\n    \"AHV\",          \"11.2\", \"11.2.0.2\",  \"NXSA-0047/0048/0055\", \"CVE-2026-31431, CVE-2026-53362, CVE-2026-46300 (kernel, CISA KEV)\",\n    \"AHV\",          \"11.0\", \"11.0.1.8\",  \"NXSA-0047/0048/0055\", \"CVE-2026-31431, CVE-2026-53362, CVE-2026-46300 (kernel, CISA KEV)\",\n    \"AHV\",          \"10.3\", \"10.3.1.14\", \"NXSA-0047/0048/0055\", \"CVE-2026-31431, CVE-2026-53362, CVE-2026-46300 (kernel, CISA KEV)\"\n];\nlet Trains = FixedVersions\n| summarize MinTrain = min(parse_version(Train)), MaxTrain = max(parse_version(Train)) by Product;\nNutanix_CL\n| where Category == \"inventory\" and OperationType == \"VERSION\"\n| where SourceEntityType in (\"AOS\", \"PrismCentral\", \"AHV\")\n| summarize arg_max(TimeGenerated, *) by SourceEntityUuid, SourceEntityType\n| extend Product = SourceEntityType, Version = trim(@\"\\s+\", Title)\n| extend Train = extract(@\"^(\\d+\\.\\d+)\", 1, Version)\n| join kind=leftouter (FixedVersions) on Product, Train\n| join kind=leftouter (Trains) on Product\n| extend TrainVer = parse_version(Train)\n| extend Status = case(\n    Version startswith \"pc.\" or isempty(Train) or TrainVer \u003c MinTrain, \"Unsupported / pre-fix release train - upgrade\",\n    isnotempty(FixedIn) and parse_version(Version) \u003c parse_version(FixedIn), strcat(\"Below fixed release \", FixedIn),\n    isempty(FixedIn) and TrainVer \u003c MaxTrain, \"Release train not in advisory table - verify manually\",\n    \"OK\")\n| where Status != \"OK\"\n| extend EntityName = extract(@\" on (.+)$\", 1, Message)\n| project TimeGenerated, NutanixClusterName, Product, EntityName, Version, Status, Advisory, Cves, SourceEntityUuid\n| extend HostCustomEntity = iff(isnotempty(EntityName), EntityName, NutanixClusterName)",
+                                             "queryFrequency":  "P1D",
+                                             "queryPeriod":  "P1D",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "P1D",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "InitialAccess",
+                                                             "PrivilegeEscalation"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1190",
+                                                                "T1068"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "P1D",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-offline-disk-access\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - VM powered off then disk cloned / attached / detached by the same actor",
+                                             "description":  "The same actor powers off a VM and, within 2 hours, clones, attaches, detaches or exports a disk. This is the offline-disk technique used to steal NTDS.dit from virtual domain controllers (Scattered Spider, Akira) without touching the guest OS.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "let Window = 2h;\nlet PowerOffs = Nutanix_CL\n| where TimeGenerated \u003e ago(3h)\n| where Category == \"audit\"\n| where tolower(SourceEntityType) has \"vm\"\n| where OperationType has \"POWER_OFF\" or Message has_any (\"power off\", \"powered off\", \"power_off\", \"poweroff\", \"shutdown\", \"shut down\")\n| where isnotempty(ActorUser)\n| project PowerOffTime = TimeGenerated, Actor = tolower(ActorUser), NutanixClusterName, PowerOffVm = SourceEntityUuid, PowerOffMessage = Message;\nNutanix_CL\n| where TimeGenerated \u003e ago(1h)\n| where Category == \"audit\"\n| where OperationType has_any (\"CLONE\", \"ATTACH\", \"DETACH\") or Message has_any (\"clone\", \"cloned\", \"attach\", \"attached\", \"detach\", \"detached\", \"export\", \"download\")\n| where tolower(SourceEntityType) has_any (\"vm\", \"disk\", \"volume\", \"image\") or Message has_any (\"disk\", \"vdisk\", \"volume group\", \"volume_group\")\n| where isnotempty(ActorUser)\n| project DiskOpTime = TimeGenerated, Actor = tolower(ActorUser), ActorUser, NutanixClusterName, DiskOpMessage = Message, DiskOpEntity = SourceEntityUuid, SourceIp\n| join kind=inner PowerOffs on Actor, NutanixClusterName\n| where DiskOpTime between (PowerOffTime .. (PowerOffTime + Window))\n| summarize PowerOffTime = min(PowerOffTime), DiskOpTime = max(DiskOpTime), PoweredOffVms = make_set(PowerOffVm, 10), PowerOffMessages = make_set(PowerOffMessage, 5), DiskOps = make_set(DiskOpMessage, 10), SourceIps = make_set(SourceIp, 10) by ActorUser, NutanixClusterName\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = tostring(SourceIps[0])",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT3H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "CredentialAccess",
+                                                             "Collection"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1003",
+                                                                "T1006"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-mass-vm-disruption\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Mass VM power-off or VM failures on a cluster",
+                                             "description":  "Ten or more distinct VMs on one cluster were powered off, crashed, failed to boot or hit I/O errors within 15 minutes. Hypervisor-level ransomware (Akira encrypting AHV .qcow2 disks, CISA AA24-109A) and destructive attacks stop VMs en masse before encrypting. Tune VmThreshold for your estate.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "let VmThreshold = 10;\nNutanix_CL\n| where (Category == \"audit\" and tolower(SourceEntityType) has \"vm\"\n        and (OperationType has \"POWER_OFF\" or Message has_any (\"power off\", \"powered off\", \"power_off\", \"poweroff\", \"shutdown\", \"shut down\", \"hard reset\")))\n    or (Category in (\"alert\", \"event\")\n        and Message has_any (\"crash\", \"crashed\", \"failed to boot\", \"boot failure\", \"i/o error\", \"io error\", \"ha restart\", \"restarted by ha\", \"vm failure\", \"unexpectedly powered off\", \"unresponsive\"))\n| extend VmKey = iff(isnotempty(SourceEntityUuid), SourceEntityUuid, strcat(Title, \"|\", tostring(AffectedEntities)))\n| summarize Vms = dcount(VmKey), Events = count(), Actors = make_set(ActorUser, 10), Samples = make_set(Message, 10), SourceIps = make_set(SourceIp, 10), StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by NutanixClusterName, Bucket = bin(TimeGenerated, 15m)\n| where Vms \u003e= VmThreshold\n| extend AccountCustomEntity = tostring(Actors[0]), HostCustomEntity = NutanixClusterName, IpCustomEntity = tostring(SourceIps[0])",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1529",
+                                                                "T1486"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-xss-login-field\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - HTML or script injected into a login username (CVE-2024-12223)",
+                                             "description":  "An audit, event or alert record contains HTML/JavaScript in the username or message, consistent with the stored XSS in the Prism login page (CVE-2024-12223), where a crafted username executes in an administrator\u0027s browser when they view the audit log.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "let XssPattern = @\"(?i)\u003c\\s*/?\\s*(script|img|svg|iframe|body)\\b|javascript:|on(error|load|mouseover)\\s*=\";\nNutanix_CL\n| where Category in (\"audit\", \"event\", \"alert\")\n| where ActorUser matches regex XssPattern or Message matches regex XssPattern\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "InitialAccess",
+                                                             "Execution"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1190",
+                                                                "T1059.007"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-platform-integrity-change\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Firmware, LCM upgrade, BMC/BIOS or certificate change",
+                                             "description":  "Lifecycle Manager (LCM) upgrades, firmware/BMC/BIOS updates and SSL/CA certificate changes alter the trust base of the platform. Legitimate during maintenance; suspicious outside it. OutsideChangeWindow is computed from the configurable window; set OnlyOutsideChangeWindow = true to alert only on out-of-window changes.",
+                                             "severity":  "Medium",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "// Approved maintenance window (UTC). Days: 0 = Sunday ... 6 = Saturday.\nlet ChangeWindowDays = dynamic([6, 0]);\nlet ChangeWindowStartHour = 1;\nlet ChangeWindowEndHour = 6;\n// Set true to alert only on changes made outside the window.\nlet OnlyOutsideChangeWindow = false;\nNutanix_CL\n| where Category in (\"audit\", \"event\")\n| where tolower(SourceEntityType) has_any (\"lcm\", \"certificate\", \"firmware\")\n    or Message has_any (\"LCM\", \"life cycle\", \"lifecycle\", \"firmware\", \"BMC\", \"BIOS\", \"upgrade\", \"ssl certificate\", \"certificate\", \"ca chain\")\n| extend Day = toint(dayofweek(TimeGenerated) / 1d), Hour = hourofday(TimeGenerated)\n| extend OutsideChangeWindow = not(Day in (ChangeWindowDays) and Hour \u003e= ChangeWindowStartHour and Hour \u003c ChangeWindowEndHour)\n| where not(OnlyOutsideChangeWindow) or OutsideChangeWindow\n| project-away Day, Hour\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Persistence",
+                                                             "DefenseEvasion"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1542",
+                                                                "T1553"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
+                                                                                                         "reopenClosedIncident":  false,
+                                                                                                         "lookbackDuration":  "PT5H",
+                                                                                                         "matchingMethod":  "AllEntities"
+                                                                                                     }
+                                                                       }
+                                         },
+                          "dependsOn":  [
+                                            "[resourceId(\u0027Microsoft.OperationalInsights/workspaces/tables\u0027, parameters(\u0027workspaceName\u0027), parameters(\u0027tableName\u0027))]"
+                                        ]
+                      },
+                      {
+                          "type":  "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+                          "apiVersion":  "2023-02-01",
+                          "name":  "[format(\u0027{0}/Microsoft.SecurityInsights/{1}\u0027, parameters(\u0027workspaceName\u0027), guid(parameters(\u0027workspaceName\u0027), \u0027nutanix-ransomware-indicators\u0027))]",
+                          "kind":  "Scheduled",
+                          "properties":  {
+                                             "displayName":  "Nutanix - Akira / ransomware indicators",
+                                             "description":  "Matches indicators from CISA AA24-109A (Akira, which has encrypted Nutanix AHV VM disks): the attacker-created account \"itadm\", Akira file extensions (.akira, .akiranew, .aki, .powerranges), and ransomware alerts such as Nutanix Files ransomware protection.",
+                                             "severity":  "High",
+                                             "enabled":  "[parameters(\u0027enableRules\u0027)]",
+                                             "query":  "let RansomExtensions = @\"(?i)\\.(akira|akiranew|aki|powerranges)\\b\";\nNutanix_CL\n| where tolower(ActorUser) == \"itadm\"\n    or Message matches regex RansomExtensions or Title matches regex RansomExtensions\n    or Message has \"ransomware\" or Title has \"ransomware\"\n| extend Indicator = case(\n    tolower(ActorUser) == \"itadm\", \"Akira-associated account name \u0027itadm\u0027\",\n    Message has \"ransomware\" or Title has \"ransomware\", \"Ransomware keyword (e.g. Nutanix Files ransomware protection)\",\n    \"Akira ransomware file extension\")\n| extend AccountCustomEntity = ActorUser, HostCustomEntity = NutanixClusterName, IpCustomEntity = SourceIp",
+                                             "queryFrequency":  "PT1H",
+                                             "queryPeriod":  "PT1H",
+                                             "triggerOperator":  "GreaterThan",
+                                             "triggerThreshold":  0,
+                                             "suppressionDuration":  "PT5H",
+                                             "suppressionEnabled":  false,
+                                             "tactics":  [
+                                                             "Impact"
+                                                         ],
+                                             "techniques":  [
+                                                                "T1486"
+                                                            ],
+                                             "entityMappings":  [
+                                                                    {
+                                                                        "entityType":  "Account",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "FullName",
+                                                                                                  "columnName":  "AccountCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "Host",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "HostName",
+                                                                                                  "columnName":  "HostCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    },
+                                                                    {
+                                                                        "entityType":  "IP",
+                                                                        "fieldMappings":  [
+                                                                                              {
+                                                                                                  "identifier":  "Address",
+                                                                                                  "columnName":  "IpCustomEntity"
+                                                                                              }
+                                                                                          ]
+                                                                    }
+                                                                ],
+                                             "incidentConfiguration":  {
+                                                                           "createIncident":  true,
+                                                                           "groupingConfiguration":  {
+                                                                                                         "enabled":  true,
                                                                                                          "reopenClosedIncident":  false,
                                                                                                          "lookbackDuration":  "PT5H",
                                                                                                          "matchingMethod":  "AllEntities"

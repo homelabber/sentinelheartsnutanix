@@ -6,7 +6,7 @@
     Run this ONCE on the machine that will run the collector. It:
       1. Runs preflight checks (PowerShell, TLS 1.2, network line-of-sight to Prism,
          Entra login, and the DCE ingestion endpoint).
-      2. Encrypts the client secret + Prism password with machine-scoped DPAPI to
+      2. Encrypts the client secret + Prism API key or password with machine-scoped DPAPI to
          secrets.dat (unreadable if copied to another machine).
       3. Writes non-secret settings to host-config.psd1.
       4. Locks down ACLs on both files.
@@ -27,6 +27,12 @@
         -SmokeTest
     # You'll be securely prompted for the client secret and Prism password.
 
+.EXAMPLE
+    # Preferred: authenticate to Prism Central with a service-account API key instead.
+    .\setup-host.ps1 -TenantId "<tenant-guid>" -ClientId "<app-id>" `
+        -DceIngestUri "<dce-uri>" -DcrImmutableId "<dcr-id>" -PrismBaseUrl "<pc-url>" `
+        -PrismApiKey (Read-Host "Prism API key" -AsSecureString)
+
 .NOTES
     Run from an elevated PowerShell (Administrator) so it can register a task that
     runs as SYSTEM and lock down file ACLs.
@@ -46,6 +52,7 @@ param(
 
     [securestring] $ClientSecret,
     [securestring] $PrismPassword,
+    [securestring] $PrismApiKey,     # PC service-account API key; when set, no password is needed
 
     [int]          $IntervalMinutes = 10,
     [string]       $TaskName        = 'Nutanix-Sentinel-Collector',
@@ -81,7 +88,7 @@ Write-Host "  PowerShell edition: $($PSVersionTable.PSEdition) $($PSVersionTable
 
 # Prompt for secrets if not supplied on the command line.
 if (-not $ClientSecret)  { $ClientSecret  = Read-Host "  Enter the Entra app CLIENT SECRET" -AsSecureString }
-if (-not $PrismPassword) { $PrismPassword = Read-Host "  Enter the Prism password for '$PrismUser'" -AsSecureString }
+if (-not $PrismApiKey -and -not $PrismPassword) { $PrismPassword = Read-Host "  Enter the Prism password for '$PrismUser'" -AsSecureString }
 
 function Get-PlainText { param([securestring]$s)
     $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
@@ -120,8 +127,9 @@ function Protect-Value { param([string]$Plain)
 
 $secretsObj = [ordered]@{
     ClientSecret  = Protect-Value (Get-PlainText $ClientSecret)
-    PrismPassword = Protect-Value (Get-PlainText $PrismPassword)
 }
+if ($PrismApiKey)   { $secretsObj.PrismApiKey   = Protect-Value (Get-PlainText $PrismApiKey) }
+if ($PrismPassword) { $secretsObj.PrismPassword = Protect-Value (Get-PlainText $PrismPassword) }
 $secretsObj | ConvertTo-Json | Set-Content -Path $secretsOut -Encoding UTF8
 Write-Host "  Wrote $secretsOut"
 
